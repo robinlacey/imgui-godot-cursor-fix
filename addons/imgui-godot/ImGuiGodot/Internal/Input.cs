@@ -13,6 +13,7 @@ internal class Input
     internal SubViewport? CurrentSubViewport { get; set; }
     internal System.Numerics.Vector2 CurrentSubViewportPos { get; set; }
     private Vector2 _mouseWheel = Vector2.Zero;
+    private Vector2? _lastEventMousePos = null;
     private ImGuiMouseCursor _currentCursor = ImGuiMouseCursor.None;
     private readonly bool _hasMouse = DisplayServer.HasFeature(DisplayServer.Feature.Mouse);
     private bool _takingTextInput = false;
@@ -62,8 +63,13 @@ internal class Input
             {
                 Godot.Input.WarpMouse(new(io.MousePos.X, io.MousePos.Y));
             }
+            else if (_lastEventMousePos is Vector2 eventPos)
+            {
+                io.AddMousePosEvent(eventPos.X, eventPos.Y);
+            }
             else
             {
+                // Fallback for first frame before any mouse event
                 var winPos = State.Instance.Layer.GetWindow().Position;
                 io.AddMousePosEvent(mousePos.X - winPos.X, mousePos.Y - winPos.Y);
             }
@@ -118,14 +124,28 @@ internal class Input
             if (vpEvent is InputEventMouse mouseEvent)
             {
                 var io = ImGui.GetIO();
-                var mousePos = DisplayServer.MouseGetPosition();
-                var windowPos = Vector2I.Zero;
-                if (!io.ConfigFlags.HasFlag(ImGuiConfigFlags.ViewportsEnable))
-                    windowPos = State.Instance.Layer.GetWindow().Position;
+                Vector2 viewportMousePos;
+
+                if (io.ConfigFlags.HasFlag(ImGuiConfigFlags.ViewportsEnable))
+                {
+                    var screenPos = DisplayServer.MouseGetPosition();
+                    viewportMousePos = new Vector2(screenPos.X, screenPos.Y);
+                }
+                else if (_lastEventMousePos is Vector2 eventPos)
+                {
+                    viewportMousePos = eventPos;
+                }
+                else
+                {
+                    var screenPos = DisplayServer.MouseGetPosition();
+                    var winPos = State.Instance.Layer.GetWindow().Position;
+                    viewportMousePos = new Vector2(
+                        screenPos.X - winPos.X, screenPos.Y - winPos.Y);
+                }
 
                 mouseEvent.Position = new Vector2(
-                    mousePos.X - windowPos.X - CurrentSubViewportPos.X,
-                    mousePos.Y - windowPos.Y - CurrentSubViewportPos.Y)
+                    viewportMousePos.X - CurrentSubViewportPos.X,
+                    viewportMousePos.Y - CurrentSubViewportPos.Y)
                     .Clamp(Vector2.Zero, CurrentSubViewport.Size);
             }
             CurrentSubViewport.PushInput(vpEvent, true);
@@ -268,6 +288,18 @@ internal class Input
 
     public virtual bool ProcessInput(InputEvent evt)
     {
+        if (evt is InputEventMouse mouse)
+        {
+            _lastEventMousePos = mouse.Position;
+            // Directly update ImGui mouse position from event coords.
+            // DisplayServer.HasFeature(Mouse) returns false in embedded mode
+            // (Godot 4.5+), so the per-frame UpdateMousePos() never runs.
+            var evtIo = ImGui.GetIO();
+            if (!evtIo.ConfigFlags.HasFlag(ImGuiConfigFlags.ViewportsEnable))
+            {
+                evtIo.AddMousePosEvent(mouse.Position.X, mouse.Position.Y);
+            }
+        }
         ProcessSubViewportWidget(evt);
         return HandleEvent(evt);
     }

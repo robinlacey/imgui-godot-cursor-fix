@@ -26,6 +26,8 @@ struct Input::Impl
     godot::SubViewport* currentSubViewport = nullptr;
     Vector2 currentSubViewportPos;
     Vector2 mouseWheel;
+    Vector2 lastEventMousePos;
+    bool hasEventMousePos = false;
     ImGuiMouseCursor currentCursor = ImGuiMouseCursor_None;
     bool hasMouse = false;
     bool takingTextInput = false;
@@ -124,8 +126,13 @@ void Input::UpdateMousePos()
         {
             godot::Input::get_singleton()->warp_mouse({io.MousePos.x, io.MousePos.y});
         }
+        else if (impl->hasEventMousePos)
+        {
+            io.AddMousePosEvent(impl->lastEventMousePos.x, impl->lastEventMousePos.y);
+        }
         else
         {
+            // Fallback for first frame before any mouse event
             Vector2i winPos = GetContext()->layer->get_window()->get_position();
             io.AddMousePosEvent(mousePos.x - winPos.x, mousePos.y - winPos.y);
         }
@@ -180,13 +187,26 @@ void Input::ProcessSubViewportWidget(const Ref<InputEvent>& evt)
         if (Ref<InputEventMouse> me = vpevt; me.is_valid())
         {
             ImGuiIO& io = ImGui::GetIO();
-            Vector2i mousePos = DisplayServer::get_singleton()->mouse_get_position();
-            Vector2i windowPos{0, 0};
-            if (!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
-                windowPos = GetContext()->layer->get_window()->get_position();
+            Vector2 viewportMousePos;
 
-            me->set_position(Vector2(mousePos.x - windowPos.x - impl->currentSubViewportPos.x,
-                                     mousePos.y - windowPos.y - impl->currentSubViewportPos.y)
+            if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+            {
+                Vector2i screenPos = DisplayServer::get_singleton()->mouse_get_position();
+                viewportMousePos = Vector2(screenPos.x, screenPos.y);
+            }
+            else if (impl->hasEventMousePos)
+            {
+                viewportMousePos = impl->lastEventMousePos;
+            }
+            else
+            {
+                Vector2i screenPos = DisplayServer::get_singleton()->mouse_get_position();
+                Vector2i winPos = GetContext()->layer->get_window()->get_position();
+                viewportMousePos = Vector2(screenPos.x - winPos.x, screenPos.y - winPos.y);
+            }
+
+            me->set_position(Vector2(viewportMousePos.x - impl->currentSubViewportPos.x,
+                                     viewportMousePos.y - impl->currentSubViewportPos.y)
                                  .clamp({0, 0}, impl->currentSubViewport->get_size()));
         }
         impl->currentSubViewport->push_input(vpevt, true);
@@ -331,6 +351,19 @@ bool Input::HandleEvent(const Ref<InputEvent>& evt)
 
 bool Input::ProcessInput(const Ref<InputEvent>& evt)
 {
+    if (Ref<InputEventMouse> me = evt; me.is_valid())
+    {
+        impl->lastEventMousePos = me->get_position();
+        impl->hasEventMousePos = true;
+        // Directly update ImGui mouse position from event coords.
+        // DisplayServer::has_feature(FEATURE_MOUSE) returns false in embedded
+        // mode (Godot 4.5+), so the per-frame UpdateMousePos() never runs.
+        ImGuiIO& io = ImGui::GetIO();
+        if (!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+        {
+            io.AddMousePosEvent(impl->lastEventMousePos.x, impl->lastEventMousePos.y);
+        }
+    }
     ProcessSubViewportWidget(evt);
     return HandleEvent(evt);
 }
